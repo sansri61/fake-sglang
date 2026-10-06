@@ -1,68 +1,25 @@
-# Prerequisites
-*.d
+# Python bytecode
+__pycache__/
+*.py[cod]
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# Packaging / `pip install -e .`
+*.egg-info/
 build/
-Build/
-build-*/
+dist/
 
-# CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-install_manifest.txt
-compile_commands.json
+# Virtual environments (bootstrap_macos.sh puts one at ../.venv; this covers
+# anyone who creates one inside the repo instead)
+.venv/
+venv/
 
-# Temporary files
-*.tmp
-*.log
-*.bak
+# Test and tool caches
+.pytest_cache/
+.benchmarks/
+.coverage
+htmlcov/
+
+# Editors and OS
+.vscode/
+.idea/
 *.swp
-
-# vcpkg
-vcpkg_installed/
-
-# debug information files
-*.dwo
-
-# test output & cache
-Testing/
-.cache/
+.DS_Store

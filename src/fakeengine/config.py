@@ -1,0 +1,119 @@
+"""Simulation configuration, derived from SGLang ``ServerArgs``."""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+_BANNER_SHOWN = False
+
+
+@dataclass
+class SimConfig:
+    model_path: str
+    served_model_name: str
+    disaggregation_mode: str        # null | prefill | decode
+    vocab_size: int
+    context_len: int
+    kv_bytes_per_token: int
+
+    block_size: int
+    num_kv_blocks: int
+    max_running_requests: int
+    max_batched_tokens: int
+
+    prefill_ms_per_1k: float
+    prefill_overhead_ms: float
+    itl_ms: float
+    itl_ms_per_running_req: float
+    kv_bandwidth_gb_s: float
+    kv_transfer_overhead_ms: float
+    speedup_ratio: float
+
+    bootstrap_host: Optional[str]
+    bootstrap_port: int
+    bootstrap_poll_interval_s: float
+    bootstrap_timeout_s: float
+
+    @property
+    def total_kv_tokens(self) -> int:
+        return self.num_kv_blocks * self.block_size
+
+    @classmethod
+    def from_server_args(cls, server_args: Any) -> "SimConfig":
+        model_config = server_args.get_model_config()
+        # Must equal Dynamo's kv_event_block_size(), which is what it registers
+        # as the model's kv_cache_block_size and what the frontend uses to
+        # chunk prompts before hashing. A mismatch means every published block
+        # is silently dropped on the Rust side.
+        page_size = max(int(getattr(server_args, "page_size", 1) or 1), 1)
+        dcp_size = max(int(getattr(server_args, "dcp_size", 1) or 1), 1)
+        block_size = page_size * dcp_size
+
+        # A KV pool large enough that a laptop-scale smoke test never evicts,
+        # but still finite so pressure and preemption are reachable on purpose.
+        num_blocks = max(int(server_args.fake_num_kv_blocks), 1)
+
+        max_batched = int(
+            server_args.max_prefill_tokens
+            or server_args.chunked_prefill_size
+            or 8192
+        )
+
+        return cls(
+            model_path=server_args.model_path,
+            served_model_name=server_args.served_model_name or server_args.model_path,
+            disaggregation_mode=server_args.disaggregation_mode or "null",
+            vocab_size=model_config.vocab_size,
+            context_len=model_config.context_len,
+            kv_bytes_per_token=model_config.kv_bytes_per_token(),
+            block_size=block_size,
+            num_kv_blocks=num_blocks,
+            max_running_requests=int(server_args.max_running_requests or 256),
+            max_batched_tokens=max_batched,
+            prefill_ms_per_1k=float(server_args.fake_prefill_ms_per_1k_tokens),
+            prefill_overhead_ms=float(server_args.fake_prefill_overhead_ms),
+            itl_ms=float(server_args.fake_itl_ms),
+            itl_ms_per_running_req=float(server_args.fake_itl_ms_per_running_req),
+            kv_bandwidth_gb_s=float(server_args.fake_kv_bandwidth_gb_s),
+            kv_transfer_overhead_ms=float(server_args.fake_kv_transfer_overhead_ms),
+            speedup_ratio=max(float(server_args.fake_speedup_ratio), 1e-6),
+            bootstrap_host=None,
+            bootstrap_port=int(server_args.disaggregation_bootstrap_port or 8998),
+            bootstrap_poll_interval_s=float(
+                server_args.fake_bootstrap_poll_interval_ms
+            )
+            / 1000.0,
+            bootstrap_timeout_s=float(server_args.fake_bootstrap_timeout_s),
+        )
+
+
+def announce(config: SimConfig) -> None:
+    """Say loudly that this is not SGLang.
+
+    A fake engine that is quiet about being fake is a benchmark waiting to be
+    misread, so this prints once per process regardless of log level.
+    """
+    global _BANNER_SHOWN
+    if _BANNER_SHOWN or os.environ.get("FAKE_SGLANG_QUIET") == "1":
+        return
+    _BANNER_SHOWN = True
+    logger.warning(
+        "fake-sglang: SIMULATED engine -- no model weights, no real inference. "
+        "mode=%s model=%s vocab=%d kv=%d blocks x %d tok "
+        "(%.1f KiB/token) prefill=%.1fms/1k itl=%.1fms xfer=%.0fGB/s speedup=%.2fx",
+        config.disaggregation_mode,
+        config.served_model_name,
+        config.vocab_size,
+        config.num_kv_blocks,
+        config.block_size,
+        config.kv_bytes_per_token / 1024,
+        config.prefill_ms_per_1k,
+        config.itl_ms,
+        config.kv_bandwidth_gb_s,
+        config.speedup_ratio,
+    )
