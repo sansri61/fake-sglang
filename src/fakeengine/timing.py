@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import asyncio
 
+from typing import Optional
+
 from fakeengine.config import SimConfig
+from fakeengine.topology import Link
 
 _BYTES_PER_GB = 1e9
 
@@ -38,11 +41,14 @@ class TimingModel:
         extra = max(running_requests - 1, 0) * cfg.itl_ms_per_running_req
         return cfg.itl_ms + extra
 
-    def transfer_ms(self, num_tokens: int) -> float:
+    def transfer_ms(self, num_tokens: int, link: Optional[Link] = None) -> float:
+        """KV payload over ``link``, or over the global link when ``None``."""
         cfg = self.config
+        bandwidth = link.bandwidth_gb_s if link else cfg.kv_bandwidth_gb_s
+        overhead = link.latency_ms if link else cfg.kv_transfer_overhead_ms
         payload_bytes = num_tokens * cfg.kv_bytes_per_token
-        seconds = payload_bytes / (cfg.kv_bandwidth_gb_s * _BYTES_PER_GB)
-        return cfg.kv_transfer_overhead_ms + seconds * 1000.0
+        seconds = payload_bytes / (bandwidth * _BYTES_PER_GB)
+        return overhead + seconds * 1000.0
 
     async def sleep_ms(self, milliseconds: float) -> None:
         if milliseconds <= 0:

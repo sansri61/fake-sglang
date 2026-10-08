@@ -23,6 +23,7 @@ from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST, KVPoll
 from fakeengine.bootstrap import BootstrapClient
 from fakeengine.config import SimConfig
 from fakeengine.timing import TimingModel
+from fakeengine.topology import Link
 
 logger = logging.getLogger(__name__)
 
@@ -74,23 +75,54 @@ class KVReceiver:
 
         num_tokens = int(self.metadata.get("num_tokens") or prompt_len)
         self.state = KVPoll.Transferring
-        transfer_ms = self._timing.transfer_ms(num_tokens)
-        logger.debug(
-            "fake-sglang: room %d transferring %d tokens (%.2f MiB) in %.2f ms",
-            self.room,
-            num_tokens,
-            num_tokens * self.config.kv_bytes_per_token / 1024 / 1024,
-            transfer_ms,
-        )
+        link = self._link(self.metadata.get("location"))
+        transfer_ms = self._timing.transfer_ms(num_tokens, link)
+        mib = num_tokens * self.config.kv_bytes_per_token / 1024 / 1024
+        if link is not None:
+            # INFO, not DEBUG: which link each handoff crossed is the whole
+            # point of running a topology, and grepping for it is how a run is
+            # judged.
+            logger.info(
+                "fake-sglang: KV room %d %s -> %s over %r link (%g GB/s): "
+                "%d tokens, %.2f MiB, %.2f ms",
+                self.room,
+                self.metadata.get("location"),
+                self.config.location,
+                link.name,
+                link.bandwidth_gb_s,
+                num_tokens,
+                mib,
+                transfer_ms,
+            )
+        else:
+            logger.debug(
+                "fake-sglang: room %d transferring %d tokens (%.2f MiB) in %.2f ms",
+                self.room,
+                num_tokens,
+                mib,
+                transfer_ms,
+            )
         await self._timing.sleep_ms(transfer_ms)
 
         self.state = KVPoll.Success
         self.metadata["transfer_ms"] = transfer_ms
+        self.metadata["link"] = link.name if link else None
         await self.client.release_room(self.host, self.port, self.room)
         return self.metadata
 
     def abort(self) -> None:
         self.state = KVPoll.Failed
+
+    def _link(self, peer_location: Optional[str]) -> Optional[Link]:
+        """The link to the prefill peer, or ``None`` for the global one.
+
+        Needs a topology plus a location at both ends; a worker launched
+        without placement keeps the old single-bandwidth behaviour.
+        """
+        topology = self.config.topology
+        if topology is None or not peer_location or not self.config.location:
+            return None
+        return topology.link_between(peer_location, self.config.location)
 
 
 class KVSender:
@@ -116,6 +148,7 @@ class KVSender:
             num_tokens=num_tokens,
             kv_bytes=num_tokens * self.config.kv_bytes_per_token,
             first_token=first_token,
+            location=self.config.location,
         )
         self.state = KVPoll.Success
 
