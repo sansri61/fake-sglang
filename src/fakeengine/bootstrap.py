@@ -110,6 +110,7 @@ class BootstrapServer:
         num_tokens: int,
         kv_bytes: int,
         first_token: Optional[int] = None,
+        location: Optional[str] = None,
     ) -> None:
         # ``first_token`` is prefill's real output. SGLang hands the same value
         # to decode through its metadata buffer rather than the KV payload
@@ -121,6 +122,7 @@ class BootstrapServer:
             "num_tokens": int(num_tokens),
             "kv_bytes": int(kv_bytes),
             "first_token": first_token,
+            "location": location,
             "ready_ts": time.time(),
         }
 

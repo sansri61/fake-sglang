@@ -121,6 +121,65 @@ Any flag is forwarded to the workers, so you can dial the simulation:
 ./launch/disagg.sh --fake-kv-bandwidth-gb-s 1 --fake-itl-ms 25
 ```
 
+## Clusters and network topology
+
+`launch/cluster.sh` runs any mix of workers from a YAML file: how many prefill,
+decode and aggregated workers, where each group sits in the network, and what
+a KV transfer costs over each kind of link.
+
+```bash
+./launch/cluster.sh launch/clusters/two-zones.yaml --dry-run   # print the plan only
+./launch/cluster.sh launch/clusters/two-zones.yaml             # run it
+./launch/cluster.sh launch/clusters/mixed.yaml -- --fake-itl-ms 20   # args after -- go to every worker
+```
+
+```yaml
+frontend: {router_mode: kv}          # kv also turns on per-worker KV events
+topology:
+  levels: [zone, rack, node]         # a location has one component per level
+  links:                             # named by the deepest level both ends share
+    node:    {bandwidth_gb_s: 450,  latency_ms: 0.01}   # same node
+    rack:    {bandwidth_gb_s: 50,   latency_ms: 0.05}   # same rack, other node
+    zone:    {bandwidth_gb_s: 12.5, latency_ms: 0.5}    # same zone, other rack
+    default: {bandwidth_gb_s: 1.25, latency_ms: 5}      # nothing shared
+workers:
+  - {role: prefill, count: 2, location: zone-a/rack-1/node-1}
+  - {role: decode,  count: 4, location: zone-b/rack-1/node-1, args: [--fake-itl-ms, 12]}
+  - {role: agg,     count: 1, location: zone-a/rack-2/node-1}
+```
+
+The prefill worker publishes its location with each KV room. The decode worker
+looks up the link between the two locations and prices the transfer as
+`latency_ms + bytes / bandwidth_gb_s`. It logs every handoff at INFO, so you
+can count how far KV traveled in a run:
+
+```
+decode-2 | fake-sglang: KV room 5439... zone-a/rack-1/node-1 -> zone-b/rack-1/node-1 over 'default' link (1.25 GB/s): 2011 tokens, 219.95 MiB, 189.51 ms
+```
+
+```bash
+./launch/cluster.sh launch/clusters/two-zones.yaml --log-dir runs/1
+grep -h "KV room" runs/1/decode-*.log | grep -o "over '[a-z]*'" | sort | uniq -c
+```
+
+At startup the launcher prints the placement and the link that each
+prefill → decode pair would use. Ports are assigned automatically. Use
+`--port-offset N` to run a cluster beside another deployment. Each run gets
+its own discovery registry (`DYN_FILE_KV`), so concurrent runs never discover
+each other's workers.
+
+**What Dynamo does with this today: nothing.** In the current Dynamo,
+`PrefillRouter` picks the prefill worker by KV overlap plus load and the
+decode worker by load alone. Nothing links the two choices by distance.
+Measured on `two-zones.yaml` with 20 requests: 11 handoffs crossed zones,
+6 crossed racks within a zone, and 3 stayed on one node. The topology is
+there so you can measure that cost, and measure any topology-aware pairing
+you add to Dynamo against it.
+
+Aggregated workers serving the same model form their own worker set. The
+frontend splits requests between that set and the prefill → decode set
+instead of adding the aggregated workers to the decode pool.
+
 ## Simulation knobs
 
 | Flag | Default | Effect |
@@ -134,6 +193,8 @@ Any flag is forwarded to the workers, so you can dial the simulation:
 | `--fake-speedup-ratio` | 1.0 | Divides every simulated sleep (time compression) |
 | `--fake-num-kv-blocks` | 8192 | KV pool size; lower it to reach preemption |
 | `--fake-bootstrap-timeout-s` | 30.0 | How long decode waits for prefill's KV |
+| `--fake-location` | unset | This worker's place in the network, e.g. `zone-a/rack-1/node-2` |
+| `--fake-topology` | unset | JSON link table; with locations on both ends it replaces the two `--fake-kv-*` knobs per transfer |
 
 KV event publishing is enabled with SGLang's own flag, not a `--fake-` one:
 
@@ -211,10 +272,12 @@ src/sglang/       the shim: SGLang-shaped facade, no simulation logic
                     (incl. the KV-event wire format, matched to SGLang's)
 src/fakeengine/   the simulator: scheduler, KV pool, timing, bootstrap,
                     transfer, KV-event policy
-launch/           agg.sh, disagg.sh, agg_kv_router.sh
+launch/           agg.sh, disagg.sh, agg_kv_router.sh,
+                    cluster.sh (+ clusters/*.yaml)
 scripts/          bootstrap_macos.sh, fetch_model_metadata.py
 models/           pinned model metadata (config + tokenizer, no weights)
 tests/            contract tests + simulator behavior + disagg + KV events
+                    + topology + cluster launcher
 ```
 
 The split is the point: `src/sglang/` translates, `src/fakeengine/` behaves.
@@ -224,7 +287,7 @@ touches one side.
 ## Tests
 
 ```bash
-pytest tests/                                                    # 49 tests
+pytest tests/                                                    # 73 tests
 pytest ../dynamo/components/src/dynamo/sglang/tests -m unit      # 556 pass
 ```
 

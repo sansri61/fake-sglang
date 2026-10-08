@@ -8,6 +8,7 @@ dependencies = [
     "numpy",
     "pydantic>=2.10",
     "aiohttp>=3.9",
+    "pyyaml",          # launch/cluster.py
 ]
 
 [project.optional-dependencies]

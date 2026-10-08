@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from fakeengine.topology import Topology, load as load_topology
+
 logger = logging.getLogger(__name__)
 
 _BANNER_SHOWN = False
@@ -39,6 +41,9 @@ class SimConfig:
     bootstrap_poll_interval_s: float
     bootstrap_timeout_s: float
 
+    location: Optional[str] = None
+    topology: Optional[Topology] = None
+
     @property
     def total_kv_tokens(self) -> int:
         return self.num_kv_blocks * self.block_size
@@ -63,6 +68,11 @@ class SimConfig:
             or server_args.chunked_prefill_size
             or 8192
         )
+
+        location = getattr(server_args, "fake_location", None) or None
+        topology = load_topology(getattr(server_args, "fake_topology", None))
+        if topology is not None and location is not None:
+            topology.parse_location(location)  # fail at startup, not mid-transfer
 
         return cls(
             model_path=server_args.model_path,
@@ -89,6 +99,8 @@ class SimConfig:
             )
             / 1000.0,
             bootstrap_timeout_s=float(server_args.fake_bootstrap_timeout_s),
+            location=location,
+            topology=topology,
         )
 
 
@@ -105,7 +117,8 @@ def announce(config: SimConfig) -> None:
     logger.warning(
         "fake-sglang: SIMULATED engine -- no model weights, no real inference. "
         "mode=%s model=%s vocab=%d kv=%d blocks x %d tok "
-        "(%.1f KiB/token) prefill=%.1fms/1k itl=%.1fms xfer=%.0fGB/s speedup=%.2fx",
+        "(%.1f KiB/token) prefill=%.1fms/1k itl=%.1fms xfer=%s speedup=%.2fx "
+        "location=%s",
         config.disaggregation_mode,
         config.served_model_name,
         config.vocab_size,
@@ -114,6 +127,9 @@ def announce(config: SimConfig) -> None:
         config.kv_bytes_per_token / 1024,
         config.prefill_ms_per_1k,
         config.itl_ms,
-        config.kv_bandwidth_gb_s,
+        "per-link topology"
+        if config.topology is not None
+        else "%.0fGB/s" % config.kv_bandwidth_gb_s,
         config.speedup_ratio,
+        config.location or "-",
     )
