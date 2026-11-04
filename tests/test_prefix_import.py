@@ -63,6 +63,35 @@ def test_capacity_rejection_does_not_evict_or_publish(server_args):
     assert scheduler.pool.can_allocate(2)
 
 
+def test_reservation_evicts_unreferenced_cache_but_not_its_prompt(server_args):
+    scheduler, events = _scheduler(server_args, blocks=2)
+    prompt = (1, 2, 3, 4)
+    prompt_hashes = _seed(scheduler, prompt)
+    cold = _seed(scheduler, (9, 10, 11, 12))
+    assert scheduler.pool.free_blocks == 0
+
+    reservation, rejection = scheduler.try_reserve_prefix_import(prompt, 4)
+
+    assert rejection is None
+    assert reservation is not None
+    assert reservation.reserved_blocks == 1
+    assert scheduler.pool.match_prefix(prompt_hashes) == 1
+    assert scheduler.pool.match_prefix(cold) == 0
+    assert events.removed == [external_id(cold[0])]
+    assert scheduler.commit_prefix_import(reservation, (5, 6, 7, 8))
+    assert scheduler.pool.match_prefix(block_hashes(prompt + (5, 6, 7, 8), 4)) == 2
+
+
+def test_reservation_reports_why_it_failed(server_args):
+    scheduler, _events = _scheduler(server_args, blocks=2)
+    prompt = (1, 2, 3, 4)
+    assert scheduler.try_reserve_prefix_import(prompt, 4) == (None, "incompatible")
+    _seed(scheduler, prompt)
+    held = scheduler.pool.allocate(1)
+    assert scheduler.try_reserve_prefix_import(prompt, 4) == (None, "capacity")
+    scheduler.pool.free(held)
+
+
 def test_partial_block_boundary_only_imports_full_blocks(server_args):
     prompt = (1, 2, 3, 4, 5)
 

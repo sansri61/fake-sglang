@@ -270,18 +270,9 @@ class KVReturnManager:
                 prepare=prepare,
             )
 
-        self.scheduler.expire_retention_leases()
-        prompt_blocks = len(attempt.prompt_ids) // self.config.block_size
-        total_blocks = (
-            len(attempt.prompt_ids) + prepare.generated_token_count
-        ) // self.config.block_size
-        if total_blocks - prompt_blocks > self.scheduler.pool.free_blocks:
-            return self._finish(
-                attempt,
-                KVReturnStatus.CAPACITY_REJECTED,
-                prepare=prepare,
-            )
-        reservation = self.scheduler.reserve_prefix_import(
+        # The scheduler checks capacity after acquiring the prompt prefix, so
+        # the prompt's own cached blocks never count as evictable room.
+        reservation, rejection = self.scheduler.try_reserve_prefix_import(
             attempt.prompt_ids,
             prepare.generated_token_count,
             prepare.cache_salt,
@@ -289,7 +280,9 @@ class KVReturnManager:
         if reservation is None:
             return self._finish(
                 attempt,
-                KVReturnStatus.INCOMPATIBLE,
+                KVReturnStatus.CAPACITY_REJECTED
+                if rejection == "capacity"
+                else KVReturnStatus.INCOMPATIBLE,
                 prepare=prepare,
             )
         attempt.prepare = prepare

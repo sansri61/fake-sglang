@@ -502,10 +502,17 @@ No session ID is used.
 The prefill bootstrap HTTP server exposes the manager lifecycle directly:
 
 ```
-POST /kv-return/v1/prepare  -> READY only after clean capacity is reserved
+POST /kv-return/v1/prepare  -> READY only after capacity is reserved
 POST /kv-return/v1/commit   -> atomically imports the validated token tail
 POST /kv-return/v1/abort    -> releases an issued or prepared attempt
 ```
+
+Prepare first acquires the cached prompt prefix, then reserves the response
+blocks from clean blocks and, failing that, by LRU eviction of unreferenced
+cache, the same rule ordinary admissions use. A warm cache keeps freed blocks
+cached, so a clean-only rule would reject nearly every return once the pool
+fills. The prompt's own blocks are never evicted for this, and a reservation
+that cannot fit evicts nothing and reports a capacity rejection.
 
 Each operation carries the complete ticket and attempt controls. JSON fields
 and types are strict, request and token-array sizes are bounded, and stable
