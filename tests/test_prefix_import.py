@@ -85,7 +85,8 @@ def test_reservation_evicts_unreferenced_cache_but_not_its_prompt(server_args):
 def test_reservation_reports_why_it_failed(server_args):
     scheduler, _events = _scheduler(server_args, blocks=2)
     prompt = (1, 2, 3, 4)
-    assert scheduler.try_reserve_prefix_import(prompt, 4) == (None, "incompatible")
+    assert scheduler.try_reserve_prefix_import(prompt, -1) == (None, "incompatible")
+    assert scheduler.try_reserve_prefix_import(prompt, 4) == (None, "prompt_evicted")
     _seed(scheduler, prompt)
     held = scheduler.pool.allocate(1)
     assert scheduler.try_reserve_prefix_import(prompt, 4) == (None, "capacity")

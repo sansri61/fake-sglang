@@ -91,12 +91,21 @@ class KVReturnAbort:
     attempt_id: str
 
 
+# Wire reasons for CAPACITY_REJECTED. Both are pool-sizing problems: either the
+# pool cannot hold the response blocks, or the prompt prefix the response
+# extends was evicted before the response came back.
+KV_RETURN_REASON_INSUFFICIENT_CAPACITY = "insufficient_clean_capacity"
+KV_RETURN_REASON_PROMPT_EVICTED = "prompt_prefix_evicted"
+
+
 @dataclass(frozen=True)
 class KVReturnResult:
     status: KVReturnStatus
     ticket: Optional[KVReturnTicket] = None
     reserved_blocks: int = 0
     idempotent: bool = False
+    # Wire reason override; None uses the status's default reason.
+    reason: Optional[str] = None
 
 
 def kv_return_compatibility(
@@ -138,6 +147,7 @@ class _Terminal:
     prepare_key: Optional[str]
     commit_key: Optional[str]
     expires_at: float
+    reason: Optional[str] = None
 
 
 class KVReturnManager:
@@ -278,12 +288,19 @@ class KVReturnManager:
             prepare.cache_salt,
         )
         if reservation is None:
+            if rejection == "capacity":
+                status = KVReturnStatus.CAPACITY_REJECTED
+                reason = None
+            elif rejection == "prompt_evicted":
+                # Not a contract problem: the prompt was cached when the
+                # ticket was issued and has since been evicted.
+                status = KVReturnStatus.CAPACITY_REJECTED
+                reason = KV_RETURN_REASON_PROMPT_EVICTED
+            else:
+                status = KVReturnStatus.INCOMPATIBLE
+                reason = None
             return self._finish(
-                attempt,
-                KVReturnStatus.CAPACITY_REJECTED
-                if rejection == "capacity"
-                else KVReturnStatus.INCOMPATIBLE,
-                prepare=prepare,
+                attempt, status, prepare=prepare, reason=reason,
             )
         attempt.prepare = prepare
         attempt.reservation = reservation
@@ -461,6 +478,7 @@ class KVReturnManager:
         commit: Optional[KVReturnCommit] = None,
         release: bool = True,
         now: Optional[float] = None,
+        reason: Optional[str] = None,
     ) -> KVReturnResult:
         self._attempts.pop(attempt.ticket.nonce, None)
         if release and attempt.reservation is not None:
@@ -474,11 +492,12 @@ class KVReturnManager:
             prepare_key=_fingerprint(prepare) if prepare is not None else None,
             commit_key=_fingerprint(commit) if commit is not None else None,
             expires_at=terminal_expires_at,
+            reason=reason,
         )
         self._terminal.move_to_end(attempt.ticket.nonce)
         while len(self._terminal) > self.max_terminal_records:
             self._terminal.popitem(last=False)
-        return KVReturnResult(status)
+        return KVReturnResult(status, reason=reason)
 
     @staticmethod
     def _terminal_result(
@@ -514,7 +533,9 @@ class KVReturnManager:
         else:
             compatible = False
         if compatible:
-            return KVReturnResult(terminal.status, idempotent=True)
+            return KVReturnResult(
+                terminal.status, idempotent=True, reason=terminal.reason,
+            )
         return KVReturnResult(
             KVReturnStatus.INCOMPATIBLE,
             idempotent=True,

@@ -202,6 +202,28 @@ def test_prepare_never_counts_its_own_prompt_as_room(server_args):
     scheduler.pool.free(held)
 
 
+def test_prepare_reports_evicted_prompt_as_capacity(server_args):
+    # The prompt was cached when the ticket was issued, then evicted before
+    # the response came back. That is cache pressure, not a contract
+    # mismatch, and a duplicate prepare must replay the same reason.
+    scheduler, events = _scheduler(server_args)
+    _seed(scheduler)
+    ticket = _ticket(scheduler)
+    scheduler.pool.clear_cache()
+    prepare = _prepare(ticket)
+
+    result = scheduler.kv_return.prepare(prepare)
+    replay = scheduler.kv_return.prepare(prepare)
+
+    assert result.status == KVReturnStatus.CAPACITY_REJECTED
+    assert result.reason == "prompt_prefix_evicted"
+    assert replay.status == KVReturnStatus.CAPACITY_REJECTED
+    assert replay.reason == "prompt_prefix_evicted"
+    assert replay.idempotent
+    assert scheduler.pool.can_allocate(scheduler.pool.num_blocks)
+    assert events.stored == []
+
+
 @pytest.mark.parametrize(
     "case",
     [

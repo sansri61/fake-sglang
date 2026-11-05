@@ -258,6 +258,80 @@ async def test_prepare_rejection_never_starts_payload_transfer(
     sleep.assert_not_awaited()
 
 
+async def test_evicted_prompt_is_a_capacity_rejection_not_incompatible(
+    server_args,
+    unused_port,
+):
+    scheduler = _scheduler(server_args)
+    decode = _config(server_args, "decode")
+    client = BootstrapClient(0.001, 1)
+    sleep = AsyncMock()
+    try:
+        async with _running_server(scheduler, unused_port) as server:
+            metadata = _publish(server, scheduler, 37)
+            # Cache pressure evicts the prompt before the response returns.
+            scheduler.pool.clear_cache()
+            outcome = await return_generated_kv(
+                decode,
+                client,
+                host="127.0.0.1",
+                port=unused_port,
+                room_metadata=metadata,
+                generated_token_ids=(5, 6, 7, 8),
+                sleep=sleep,
+            )
+    finally:
+        await client.close()
+
+    assert outcome.status == KVReturnOutcomeStatus.PREPARE_REJECTED
+    response = outcome.prepare_response
+    assert response.status == KVReturnControlStatus.CAPACITY_REJECTED
+    assert response.http_status == 409
+    assert response.reason == "prompt_prefix_evicted"
+    sleep.assert_not_awaited()
+
+
+class _UnknownCapacityReasonServer(BootstrapServer):
+    async def _prepare_kv_return(self, _request):
+        return web.json_response(
+            {
+                "status": "capacity_rejected",
+                "reason": "made_up_reason",
+                "idempotent": False,
+                "reserved_blocks": 0,
+            },
+            status=409,
+        )
+
+
+async def test_unknown_capacity_reason_is_a_protocol_error(
+    server_args,
+    unused_port,
+):
+    scheduler = _scheduler(server_args)
+    decode = _config(server_args, "decode")
+    client = BootstrapClient(0.001, 1)
+    try:
+        async with _running_server(
+            scheduler,
+            unused_port,
+            _UnknownCapacityReasonServer,
+        ) as server:
+            metadata = _publish(server, scheduler, 38)
+            with pytest.raises(KVReturnProtocolError, match="invalid reason"):
+                await return_generated_kv(
+                    decode,
+                    client,
+                    host="127.0.0.1",
+                    port=unused_port,
+                    room_metadata=metadata,
+                    generated_token_ids=(5, 6, 7, 8),
+                    sleep=_no_sleep,
+                )
+    finally:
+        await client.close()
+
+
 class _SlowPrepareServer(BootstrapServer):
     async def _prepare_kv_return(self, request):
         await asyncio.sleep(0.1)

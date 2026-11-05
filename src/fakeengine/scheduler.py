@@ -568,9 +568,10 @@ class Scheduler:
     ) -> Tuple[Optional[PrefixImportReservation], Optional[str]]:
         """Like ``reserve_prefix_import``, but also says why it failed.
 
-        The rejection is ``"incompatible"`` for bad input or a prompt that is
-        no longer fully cached, and ``"capacity"`` when the pool cannot supply
-        the response blocks.
+        The rejection is ``"incompatible"`` for bad input,
+        ``"prompt_evicted"`` when the prompt prefix is no longer fully cached
+        (evicted under pressure or cleared), and ``"capacity"`` when the pool
+        cannot supply the response blocks.
 
         The response blocks come from clean blocks first, then LRU eviction of
         unreferenced cache, exactly as an ordinary admission does. Clean
@@ -597,7 +598,7 @@ class Scheduler:
         prefix_blocks = self.pool.acquire_prefix(prompt_hashes, touch=False)
         if len(prefix_blocks) != len(prompt_hashes):
             self.pool.free(prefix_blocks)
-            return None, "incompatible"
+            return None, "prompt_evicted"
 
         target_blocks = (
             len(prompt) + max_generated_tokens
