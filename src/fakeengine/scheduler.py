@@ -554,7 +554,32 @@ class Scheduler:
         max_generated_tokens: int,
         cache_salt: Optional[str] = None,
     ) -> Optional[PrefixImportReservation]:
-        """Hold clean blocks for a future prompt-plus-response prefix."""
+        """Hold blocks for a future prompt-plus-response prefix."""
+        reservation, _rejection = self.try_reserve_prefix_import(
+            prompt_ids, max_generated_tokens, cache_salt,
+        )
+        return reservation
+
+    def try_reserve_prefix_import(
+        self,
+        prompt_ids: Sequence[int],
+        max_generated_tokens: int,
+        cache_salt: Optional[str] = None,
+    ) -> Tuple[Optional[PrefixImportReservation], Optional[str]]:
+        """Like ``reserve_prefix_import``, but also says why it failed.
+
+        The rejection is ``"incompatible"`` for bad input,
+        ``"prompt_evicted"`` when the prompt prefix is no longer fully cached
+        (evicted under pressure or cleared), and ``"capacity"`` when the pool
+        cannot supply the response blocks.
+
+        The response blocks come from clean blocks first, then LRU eviction of
+        unreferenced cache, exactly as an ordinary admission does. Clean
+        blocks alone are not enough: a warm cache keeps every freed block
+        cached, so the clean pool stays near empty and a clean-only rule
+        rejects almost every return. The prompt prefix is acquired first, so
+        eviction can never remove the prefix the response extends.
+        """
         self.expire_retention_leases()
         prompt = tuple(prompt_ids)
         if (
@@ -566,23 +591,27 @@ class Scheduler:
             or not self._valid_token_ids(prompt)
             or cache_salt is not None and not isinstance(cache_salt, str)
         ):
-            return None
+            return None, "incompatible"
 
         salt = cache_salt or None
         prompt_hashes = block_hashes(prompt, self.config.block_size, salt)
         prefix_blocks = self.pool.acquire_prefix(prompt_hashes, touch=False)
         if len(prefix_blocks) != len(prompt_hashes):
             self.pool.free(prefix_blocks)
-            return None
+            return None, "prompt_evicted"
 
         target_blocks = (
             len(prompt) + max_generated_tokens
         ) // self.config.block_size
         reserve_count = target_blocks - len(prompt_hashes)
-        reserved_blocks = self.pool.allocate_clean(reserve_count)
+        # Check first so a reservation that cannot fit evicts nothing.
+        if not self.pool.can_allocate(reserve_count):
+            self.pool.free(prefix_blocks)
+            return None, "capacity"
+        reserved_blocks = self.pool.allocate(reserve_count)
         if reserved_blocks is None:
             self.pool.free(prefix_blocks)
-            return None
+            return None, "capacity"
 
         return PrefixImportReservation(
             prompt,
@@ -591,7 +620,7 @@ class Scheduler:
             self._prefix_import_owner,
             prefix_blocks,
             reserved_blocks,
-        )
+        ), None
 
     def commit_prefix_import(
         self,

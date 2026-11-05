@@ -502,10 +502,25 @@ No session ID is used.
 The prefill bootstrap HTTP server exposes the manager lifecycle directly:
 
 ```
-POST /kv-return/v1/prepare  -> READY only after clean capacity is reserved
+POST /kv-return/v1/prepare  -> READY only after capacity is reserved
 POST /kv-return/v1/commit   -> atomically imports the validated token tail
 POST /kv-return/v1/abort    -> releases an issued or prepared attempt
 ```
+
+Prepare first acquires the cached prompt prefix, then reserves the response
+blocks from clean blocks and, failing that, by LRU eviction of unreferenced
+cache, the same rule ordinary admissions use. A warm cache keeps freed blocks
+cached, so a clean-only rule would reject nearly every return once the pool
+fills. The prompt's own blocks are never evicted for this, and a reservation
+that cannot fit evicts nothing and reports a capacity rejection.
+
+Capacity rejections use HTTP 409 with status `capacity_rejected` and one of
+two reasons. `insufficient_clean_capacity` means the pool cannot hold the
+response blocks (the name predates the eviction rule above and is kept for
+wire compatibility). `prompt_prefix_evicted` means the prompt was cached when
+the ticket was issued but was evicted or cleared before the response came
+back. Both point at pool sizing, so the decode side counts both as
+`prepare_capacity_rejected`; contract mismatches remain `incompatible`.
 
 Each operation carries the complete ticket and attempt controls. JSON fields
 and types are strict, request and token-array sizes are bounded, and stable

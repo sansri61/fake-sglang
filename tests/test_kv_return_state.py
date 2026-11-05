@@ -161,6 +161,69 @@ def test_prepare_rejects_capacity_before_transfer(server_args):
     assert scheduler.pool.can_allocate(2)
 
 
+def test_prepare_evicts_lru_cache_when_no_clean_blocks_remain(server_args):
+    # A warm prefill cache keeps freed blocks cached, so the clean pool is
+    # empty. The return must evict cold cache like an admission would,
+    # instead of being rejected for capacity.
+    scheduler, events = _scheduler(server_args, blocks=3)
+    other = _seed(scheduler, prompt=(20, 21, 22, 23, 24, 25, 26, 27))
+    prompt_hashes = _seed(scheduler)
+    assert scheduler.pool.free_blocks == 0
+    ticket = _ticket(scheduler)
+
+    prepared = scheduler.kv_return.prepare(_prepare(ticket))
+    committed = scheduler.kv_return.commit(_commit(ticket))
+
+    assert prepared.status == KVReturnStatus.PREPARED
+    assert committed.status == KVReturnStatus.COMMITTED
+    returned = block_hashes((1, 2, 3, 4, 5, 6, 7, 8), 4)
+    assert scheduler.pool.match_prefix(returned) == 2
+    assert scheduler.pool.match_prefix(prompt_hashes) == 1
+    assert scheduler.pool.match_prefix(other) == 1
+    assert len(events.removed) == 1
+    assert len(events.stored) == 1
+
+
+def test_prepare_never_counts_its_own_prompt_as_room(server_args):
+    # The only unreferenced cached block is the prompt the response extends.
+    # It must not be evicted to make room, and the result is a capacity
+    # rejection rather than "incompatible".
+    scheduler, events = _scheduler(server_args, blocks=2)
+    prompt_hashes = _seed(scheduler)
+    held = scheduler.pool.allocate(1)
+    assert held is not None
+    assert scheduler.pool.evictable_blocks == 1
+
+    result = scheduler.kv_return.prepare(_prepare(_ticket(scheduler)))
+
+    assert result.status == KVReturnStatus.CAPACITY_REJECTED
+    assert scheduler.pool.match_prefix(prompt_hashes) == 1
+    assert events.stored == events.removed == []
+    scheduler.pool.free(held)
+
+
+def test_prepare_reports_evicted_prompt_as_capacity(server_args):
+    # The prompt was cached when the ticket was issued, then evicted before
+    # the response came back. That is cache pressure, not a contract
+    # mismatch, and a duplicate prepare must replay the same reason.
+    scheduler, events = _scheduler(server_args)
+    _seed(scheduler)
+    ticket = _ticket(scheduler)
+    scheduler.pool.clear_cache()
+    prepare = _prepare(ticket)
+
+    result = scheduler.kv_return.prepare(prepare)
+    replay = scheduler.kv_return.prepare(prepare)
+
+    assert result.status == KVReturnStatus.CAPACITY_REJECTED
+    assert result.reason == "prompt_prefix_evicted"
+    assert replay.status == KVReturnStatus.CAPACITY_REJECTED
+    assert replay.reason == "prompt_prefix_evicted"
+    assert replay.idempotent
+    assert scheduler.pool.can_allocate(scheduler.pool.num_blocks)
+    assert events.stored == []
+
+
 @pytest.mark.parametrize(
     "case",
     [

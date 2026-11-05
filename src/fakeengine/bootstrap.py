@@ -31,6 +31,8 @@ from fakeengine.kv_return import (
     KV_RETURN_MAX_IDENTIFIER_LENGTH,
     KV_RETURN_MAX_INTEGER,
     KV_RETURN_MAX_METADATA_LENGTH,
+    KV_RETURN_REASON_INSUFFICIENT_CAPACITY,
+    KV_RETURN_REASON_PROMPT_EVICTED,
     KVReturnAbort,
     KVReturnCommit,
     KVReturnCompatibility,
@@ -710,14 +712,14 @@ def _manager_response(result: KVReturnResult) -> web.Response:
         if result.status == KVReturnStatus.PREPARED
         else result.status.value
     )
-    reason = {
+    reason = result.reason or {
         KVReturnStatus.ISSUED: "ticket_issued",
         KVReturnStatus.DISABLED: "kv_return_disabled",
         KVReturnStatus.PREPARED: "reservation_ready",
         KVReturnStatus.COMMITTED: "prefix_committed",
         KVReturnStatus.ABORTED: "attempt_aborted",
         KVReturnStatus.EXPIRED: "attempt_expired",
-        KVReturnStatus.CAPACITY_REJECTED: "insufficient_clean_capacity",
+        KVReturnStatus.CAPACITY_REJECTED: KV_RETURN_REASON_INSUFFICIENT_CAPACITY,
         KVReturnStatus.INCOMPATIBLE: "incompatible_control_contract",
         KVReturnStatus.INVALID_TOKEN_IDS: "invalid_generated_token_ids",
         KVReturnStatus.CHECKSUM_MISMATCH: "token_ids_checksum_mismatch",
@@ -1017,12 +1019,16 @@ _KV_RETURN_FIXED_REASONS = {
     KVReturnControlStatus.ABORTED: "attempt_aborted",
     KVReturnControlStatus.DISABLED: "kv_return_disabled",
     KVReturnControlStatus.EXPIRED: "attempt_expired",
-    KVReturnControlStatus.CAPACITY_REJECTED: "insufficient_clean_capacity",
     KVReturnControlStatus.INVALID_TOKEN_IDS: "invalid_generated_token_ids",
     KVReturnControlStatus.CHECKSUM_MISMATCH: "token_ids_checksum_mismatch",
     KVReturnControlStatus.NOT_PREPARED: "attempt_not_prepared",
     KVReturnControlStatus.IMPORT_FAILED: "atomic_prefix_import_failed",
     KVReturnControlStatus.NOT_FOUND: "ticket_not_found",
+}
+
+_KV_RETURN_CAPACITY_REASONS = {
+    KV_RETURN_REASON_INSUFFICIENT_CAPACITY,
+    KV_RETURN_REASON_PROMPT_EVICTED,
 }
 
 _KV_RETURN_INCOMPATIBLE_REASONS = {
@@ -1082,6 +1088,8 @@ def _parse_kv_return_response(
     if (
         status == KVReturnControlStatus.INCOMPATIBLE
         and reason not in _KV_RETURN_INCOMPATIBLE_REASONS
+        or status == KVReturnControlStatus.CAPACITY_REJECTED
+        and reason not in _KV_RETURN_CAPACITY_REASONS
     ):
         raise KVReturnProtocolError(
             f"KV return {operation} response has an invalid reason"
